@@ -4,18 +4,18 @@
 
 * [Introduction](#introduction)
 * [Useful references](#useful-references)
+* [Summary](#summary)
 * [Structure](#structure)
   * [Parameters](#parameters)
   * [Node properties](#node-properties)
   * [Schema](#schema)
-* [Algorithm](#algorithm)
+* [Algorithm in detail](#algorithm-in-detail)
   * [`Get(key)`](#getkey)
   * [`Set(key, value)`](#setkey-value)
   * [`Delete(key)`](#deletekey)
   * [`Keys()`, `Values()` and `Entries()`](#keys-values-and-entries)
   * [Differences to CHAMP](#differences-to-champ)
   * [Canonical form](#canonical-form)
-* [Parameter trade-offs](#parameter-trade-offs)
 * [Use as a "Set"](#use-as-a-%22set%22)
 * [Implementation defaults](#implementation-defaults)
   * [`hashAlg`](#hashalg)
@@ -31,9 +31,9 @@
 
 ## Introduction
 
-The IPLD HashMap provides multi-block key/value storage and implements the Map [kind](/data-model-layer/data-model.md#kinds) as a [generic](generics.md) in the IPLD type system.
+The IPLD HashMap provides multi-block key/value storage and implements the Map [kind](/data-model-layer/data-model.md#kinds) as a [generic](generics.md) ***(TODO: "generic" or "advanced data structure" or "advanced layout"?)*** in the IPLD type system.
 
-The IPLD HashMap is constructed as a [hash array mapped trie (HAMT)](https://en.wikipedia.org/wiki/Hash_array_mapped_trie) with [CHAMP](https://michael.steindorfer.name/publications/oopsla15.pdf) mutation semantics and buckets for value storage. The CHAMP invariant and mutation rules provide us with the ability to maintain canonical forms given any set of keys and their values, regardless of insertion order and intermediate data insertion and deletion. Therefore, for any given set of keys and their values, a consistent HashMap configuration and block encoding, the root node should always produce the same content identifier (CID).
+The IPLD HashMap is constructed as a [hash array mapped trie (HAMT)](https://en.wikipedia.org/wiki/Hash_array_mapped_trie) with buckets for value storage and [CHAMP](https://michael.steindorfer.name/publications/oopsla15.pdf) mutation semantics. The CHAMP invariant and mutation rules provide us with the ability to maintain canonical forms given any set of keys and their values, regardless of insertion order and intermediate data insertion and deletion. Therefore, for any given set of keys and their values, a consistent IPLD HashMap configuration and block encoding, the root node should always produce the same content identifier (CID).
 
 ## Useful references
 
@@ -44,24 +44,46 @@ The IPLD HashMap is constructed as a [hash array mapped trie (HAMT)](https://en.
 * [IAMap](https://github.com/rvagg/iamap) JavaScript implementation
 * [go-hamt-ipld](https://github.com/ipfs/go-hamt-ipld) Go implementation
 
+## Summary
+
+The HAMT algorithm is used to build the IPLD HashMap. This algorithm is common across many language standard libraries, particularly on the JVM (Clojure, Scala, Java), to power very efficient in-memory unordered key/value storage data structures. We extend the basic algorithm with buckets for block elasticity and strict mutation rules to ensure canonical form.
+
+The HAMT algorithm hashes incoming keys and uses incrementing subsections of that hash at each level of its tree structure to determine the placement of either the entry or a link to a child node of the tree. A `bitWidth` determines the number of bits of the hash to use for index calculation at each level of the tree such that the root node takes the first `bitWidth` bits of the hash to calculate an index and as we move lower in the tree, we move along the hash by `depth x bitWidth` bits. In this way, a sufficiently randomizing hash function will generate a hash that provides a new index at each level of the data structure. An index comprising `bitWidth` bits will generate index values of  `[ 0, 2`<sup>`bitWidth`</sup>` )`. So a `bitWidth` of `8` will generate indexes of `0` to `255` inclusive.
+
+Each node in the tree can therefore hold up to `2`<sup>`bitWidth`</sup> elements of data, which we store in an array. In the IPLD HashMap we store entries in buckets. A `Set(key, value)` mutation where the index generated at the root node for the hash of `key` denotes an array index that does not yet contain an entry, we create a new bucket and insert the `key` / `value` pair entry. In this way, a single node can theoretically hold up to `2`<sup>`bitWidth`</sup>` x bucketSize` entries, where `bucketSize` is the maximum number of elements a bucket is allowed to contain ("collisions"). In practice, indexes do not distribute with perfect randomness so this maximum is theoretical. Entries stored in the node's buckets are stored in `key`-sorted order.
+
+If a `Set(key, value)` mutation places a new entry in a bucket that already contains `bucketSize` entries, we overflow to a new child node. A new empty node is created and all existing entries in the bucket, in addition to the new `key` / `value` pair entry are inserted into this new node. We increment the `depth` for calculation of the `index` from each `key`'s hash value to calculate the position in the new node's data array. By incrementing `depth` we move along by `bitWidth` bits in each `key`'s hash. With a sufficiently random hash function each `key` that generated the same `index` at a previous level should be distributed roughly evenly in the new node's data array, resulting in a node that contains up to `bucketSize` new buckets.
+
+The process of generating `index` values from `bitWidth` subsections of the hash values provides us with a depth of up to `(hashBytes x 8) / bitWidth` levels in our tree data structure where `hashBytes` is the number of bytes generated by the hash function. With each node able to store up to `2`<sup>`bitWidth`</sup> child node references and up to `bucketSize` elements able to be stored in colliding leaf positions we are able to store a very large number of entries. A hash function's randomness will dictate the  even distribution of elements and a hash function's output `hashBytes` will dictate the maximum depth of the tree.
+
+A further optimization is applied to reduce the storage requirements of HAMT nodes. The data elements array is only allocated to be long enough to store actual entries: non-empty buckets or links to actual child nodes. An empty or `Null` array index is not used as a signal that a `key` does not exist in that node. Instead, the data elements array is compacted by use of a `map` bitfield where each bit of `map` corresponds to an `index` in the node. When an `index` is generated, the `index` bit of the `map` bitfield is checked. If the bit is not set (`0`), that index does not exist. If the bit is set (`1`), the value exists in the data elements array. To determine the index of the data elements array, we perform a bit-count (`popcount()`) on the `map` bitfield _up to_ the `index` bit to generate a `dataIndex`. In this way, the data elements array's total length is equal to `popcount(map)` (the number of bits set in all of `map`). If `map`'s bits are all set then the data elements array will be `2`<sup>`bitWidth`</sup> in length, i.e. every position will contain either a bucket or a link to a child node.
+
+Insertion of new buckets with `Set(key, value)` involves splicing in a new element to the data array at the `dataIndex` position and setting the `index` bit of the `map` bitmap. Converting a bucket to a child node leaves the `map` bit map alone as the `index` bit still indicates there is an element at that position.
+
+A `Get(key)` operation performs the same hash, `index` and `dataIndex` calculation at the root node, traversing into a bucket to find an entry matching `key` or traversing into child nodes and performing the same `index` and `dataIndex` calculation but at an offset of an additional `bitWidth` bits in the `key`'s hash.
+
+A `Delete(key)` mutation first locates the element in the same way as `Get(key)` and if that entry exists, it is removed from the bucket containing it. If the bucket is empty after deletion of the entry, we remove the bucket element completely from the data element array and unsets the `index` bit of `map`. If the node containing the deleted element has no links to child nodes and contains `bucketSize` elements after the deletion, those elements are compacted into a single bucket and placed in the parent node in place of the link to that node. We perform this check on the parent (and recursively if required), thereby transforming the tree into its most compact form, with only buckets in place of nodes that have up to `bucketSize` entries at all edges. This compaction process combined with the `key` ordering of entries in buckets produces canonical forms of the data structure for any given set of `key` / `value` pairs regardless of their insertion order or whether any intermediate entries have been added and deleted.
+
+Each node in an IPLD HashMap is stored in a distinct IPLD block and CIDs are used for child node links.
+
 ## Structure
 
 ### Parameters
 
-Configurable properties for any given HashMap:
+Configurable parameters for any given IPLD HashMap:
 
-* `hashAlg`: The hash algorithm applied to keys in order to evenly distribute entries throughout the data structure. The algorithm may be chosen based on speed, byte-size and randomness properties.
-* `bitWidth`: The number of bits to use at each level of the data structure for determining the index of the entry or the a link to the next level of the data structure to continue searching. The equation `2`<sup>`bitWidth`</sup> yields the arity of the HashMap nodes, i.e. the number of storage locations for buckets and/or links to child nodes.
+* `hashAlg`: The hash algorithm applied to keys in order to evenly distribute entries throughout the data structure. The algorithm is chosen based on speed, byte-size and randomness properties (but it must be available to the reader, hence the need for shared defaults, see below).
+* `bitWidth`: The number of bits to use at each level of the data structure for determining the index of the entry or a link to the next level of the data structure to continue searching. The equation `2`<sup>`bitWidth`</sup> yields the arity of the HashMap nodes, i.e. the number of storage locations for buckets and/or links to child nodes.
 * `bucketSize`: The maximum array size of entry storage buckets such that exceeding `bucketSize` causes the creation of a new child node to replace entry storage.
 
 ### Node properties
 
 Each node in a HashMap data structure contains:
 
-* `data`: An array, with a length of zero to `2`<sup>`bitWidth`</sup>.
-* `map`: A bitmap where the first `bitWidth` bits are used to indicate whether a bucket or child node link is present at each possible index of the node.
+* `data`: An array, with a length of one to `2`<sup>`bitWidth`</sup>.
+* `map`: A bitfield where the first `2`<sup>`bitWidth`</sup> bits are used to indicate whether a bucket or child node link is present at each possible index of the node.
 
-An important property of a HAMT is that the `data` array only contains active elements. Indexes in a node that do not contain any values (in buckets or links to child nodes) are not stored and the `map` bitmap is used to determine the `data` whether values are present and the array index of present values using a [`popcount()`](https://en.wikipedia.org/wiki/Hamming_weight). This allows us to store a maximally compacted `data` array for each node.
+An important property of a HAMT is that the `data` array only contains active elements. Indexes in a node that do not contain any values (in buckets or links to child nodes) are not stored and the `map` bitfield is used to determine the `data` whether values are present and the array index of present values using a [`popcount()`](https://en.wikipedia.org/wiki/Hamming_weight). This allows us to store a maximally compacted `data` array for each node.
 
 ### Schema
 
@@ -75,13 +97,13 @@ type HashMapRoot struct {
   hashAlg String
   bitWidth Int
   bucketSize Int
-  map Int
+  map Bytes
   data [ Element ]
 }
 
 # Non-root node layout
 type HashMapNode struct {
-  map Int
+  map Bytes
   data [ Element ]
 }
 
@@ -98,14 +120,14 @@ type BucketEntry struct {
 } representation tuple
 
 type Value union {
-	| Bool bool
-	| String string
-	| Bytes bytes
-	| Int int
-	| Float float
-	| Map map
-	| List list
-	| Link link
+  | Bool bool
+  | String string
+  | Bytes bytes
+  | Int int
+  | Float float
+  | Map map
+  | List list
+  | Link link
 } representation kinded
 ```
 
@@ -117,7 +139,7 @@ Notes:
 * Values can be any kind but cannot be `Null`
 * Keys are stored in `Byte` form
 
-## Algorithm
+## Algorithm in detail
 
 ### `Get(key)`
 
@@ -203,7 +225,7 @@ An implementation should only emit any given `key`, `value` or `key` / `value` e
 
 This algorithm differs from CHAMP in the following ways:
 
-1. CHAMP separates `map` into `datamap` and `nodemap` for referencing local data elements and local references to child nodes. The `data` array is then split in half such that data elements are stored from the left and the child node links are stored from the right with a reverse index. This allows important speed optimizations for fully in-memory data structures but those optimizations are not present, or make negligible impact on a distributed data structure.
+1. CHAMP separates `map` into `datamap` and `nodemap` for referencing local data elements and local references to child nodes. The `data` array is then split in half such that data elements are stored from the left and the child node links are stored from the right with a reverse index. This allows important speed and cache-locality optimizations for fully in-memory data structures but those optimizations are not present, or make negligible impact in a distributed data structure.
 2. CHAMP does not make use, of buckets, nor do common implementations of HAMTs on the JVM (e.g. Clojure, Scala, Java). Storing only entries and links removes the need for an iterative search and compare within buckets and allows direct traversal to the entries required. This is effective for in-memory data structures but is less useful when performing block-by-block traversal with distributed data structures where packing data to reduce traversals may be more important.
 
 ### Canonical form
@@ -213,33 +235,19 @@ To achieve canonical forms for any given set of `key` / `value` pairs, we note t
 1. We must keep buckets sorted by `key` during both insertion and deletion operations.
 2. We must retain an invariant that states that no non-root node may contain, either directly or via links through child nodes, less than `bucketSize + 1` entries. By applying this strictly during the deletion process, we can generalize that no non-root node without links to child nodes may contain less than `bucketSize + 1` entries. Any non-root node in the tree breaking this rule during the deletion process must have its entries collapsed into a single bucket of `bucketSize` length (i.e. without the entry being removed) and inserted into its parent node in place of the link to the impacted node. We continue to apply this rule recursively up the tree, potentially collapsing additional nodes into their parents.
 
-## Parameter trade-offs
-
-`hashAlg`:
-
-* Randomness is a critical component of a hash algorithm selected, the greater the randomness of hash bytes produced for any given set of keys, the more evenly distributed the keys will be in the resulting data structure and height will be reduced. Tree height is critical for IPLD trees due to the cost in fetching blocks during traversal. The fewer blocks to be traversed, the faster the final value can be resolved.
-* Number of bytes produced by a hash algorithm impacts the theoretical maximum number of entries able to be stored in an IPLD HashMap. This is unlikely to have a practical impact for average data sets where the hash algorithm's randomness is sufficient to distribute elements evenly. Each level of the tree uses `bitWidth` bits from a key's hash. So a hash algorithm producing 32-bytes of data with a `bitWidth` of `8` will have a maximum tree depth of `32`. Since a `bitWidth` of `8` yields `2`<sup>`8`</sup> `= 256` elements in each node's `data` array. At a maximally filled IPLD HashMap with perfect randomness, we would have `18,446,744,073,709,550,000` `data` elements across all leaf nodes. Multiply this by `bucketSize` and we find the theoretical maximum number of elements able to be stored. However, perfect randomness is not possible with a hash algorithm, and collisions will occur routinely in a slice of `bitWidth` bytes of any two given hashes. It is unlikely that an IPLD HashMap builds a perfect tree structure with even depths across branches and that the maximum depth of `32` will be reached well before `1.844E+19` entries are added.
-* See below for a discussion on the security implications of a chosen hash algorithm.
-
-`bucketSize` and `bitWidth`:
-
-* Hash collisions occur at every set of `bitWidth` bytes in any large enough set of `key`s, this is precisely why the data structure fills up buckets and then overflows to new child nodes. Buckets defer the need to create child nodes by allowing collisions to coexist within a node.
-* Tuning `bucketSize` and `bitWidth` has the greatest impact on the size of blocks generated by the IPLD HashMap algorithm. The greater the block size, the fewer block loads are required for a traversal. Larger blocks will take longer to load in networked scenarios. A maximally full node at any point in an IPLD HashMap will have a size between `size(CID) x 2`<sup>`bitWidth`</sup> (the length of the `data` array filled with links, where `size(CID)` is the size of a CID) and `(averageKeySize + averageValueSize) x bucketSize x 2`<sup>`bitWidth`</sup>. That is, a node that is maximally full of links to child nodes will have a `data` array filled with `CID`s, and a node that is maximally full of data will have a `bucketSize` length bucket array full of entries at each element of the `data` array. The size of entries is determined by the size of the keys and the size of the values. If an IPLD HashMap is only used to store links to other blocks, `averageValueSize` will be equal to `size(CID)`.
-* `bucketSize` is a multiplier of theoretical maximum block size while `bitWidth` results in a power of `2` increase. The two variables combined provide a broader selection range of target block size.
-* Increases in `bucketSize` increase the elasticity (and therefore variability) of block sizes produced by the IPLD HashMap algorithm as per the above calculations. A `bucketSize` of `1` will result in more uniform block sizes in a large data set.
-* Increasing `bucketSize` can increase the theoretical maximum size of the data structure, allowing a `hashAlg` producing fewer bytes to theoretically store a larger number of entries.
-
 ## Use as a "Set"
+
+The IPLD HashMap can be repurposed as a "Set": a data structure that holds only unique `key`s. Every `value` in a `Set(key, value)` mutation is fixed to some trivial value, such as `true` or `1`. `Has(key)` operations are then simply a `Get(key)` operation that asserts that a value was returned.
 
 ## Implementation defaults
 
-Implements need to ship with _sensible defaults_ and be able to create HashMaps without users requiring intimate knowledge o the algorithm and the all of the trade-offs (although such knowledge will help in their optimal use).
+Implements need to ship with _sensible defaults_ and be able to create HashMaps without users requiring intimate knowledge of the algorithm and the all of the trade-offs (although such knowledge will help in their optimal use).
 
 These defaults are descriptive rather than prescriptive. New implementations may opt for different defaults, while acknowledging that they will produce different graphs (and therefore CIDs) for the same data as with the defaults listed below. Users may also be provided with facilities to override these defaults to suit their use cases where these defaults do not produce optimal outcomes.
 
 ### `hashAlg`
 
-* The default supported hash algorithm for writing IPLD HashMaps is the x64 form of the 128-bit [MurmurHash3](https://github.com/aappleby/smhasher), identified by the multihash name ['murmur3-128'](https://github.com/multiformats/multicodec/blob/master/table.csv). Note the x86 version will produce different output and some implementations. Also, [some JavaScript implementations](https://cimi.io/murmurhash3js-revisited/) do not correctly decompose UTF-8 strings into their constituent bytes for hashing so will not produce portable results.
+* The default supported hash algorithm for writing IPLD HashMaps is the x64 form of the 128-bit [MurmurHash3](https://github.com/aappleby/smhasher), identified by the multihash name ['murmur3-128'](https://github.com/multiformats/multicodec/blob/master/table.csv). Note the x86 form will produce different output so should not be confused with the x64 form. Additionally, [some JavaScript implementations](https://cimi.io/murmurhash3js-revisited/) do not correctly decompose UTF-8 strings into their constituent bytes for hashing so will not produce portable results.
 * Pluggability of hash algorithms is encouraged to allow users to switch switch if their use-case has a compelling reason. Such pluggability requires the supply of an algorithm that takes Bytes and returns Bytes. Users changing the hash algorithm need to be aware that such pluggability restricts the ability of other implementations to read their data since matching hash algorithms also need to be supplied on the read-side.
 
 ### `bitWidth`
@@ -248,7 +256,7 @@ These defaults are descriptive rather than prescriptive. New implementations may
 
 ### `bucketSize`
 
-* The default `bucketSize` is `3` for writing IPLD HashMaps. Combined with a `bitWidth` of `8` this yields a theoretical maximally full node of `256 x 3 = 768` `key` / `value` pairs.
+* The default `bucketSize` is `3` for writing IPLD HashMaps. Combined with a `bitWidth` of `8` this yields a theoretical maximally full node (with no child nodes) of `256 x 3 = 768` `key` / `value` pairs.
 
 ### Maximum key size
 
@@ -256,7 +264,7 @@ Implementations may impose a maximum key size for writing IPLD HashMaps. Reading
 
 ### Inline values
 
-Implementations may choose to write all values in their own blocks and store only CIDs in Value locations in an IPLD HashMap. Alternatively, a rough size heuristic may also be applied to make a decision regarding inline versus linked blocks. As storage of arbitrary kinds in Value locations is allowed by this specification, implementations should support this for read operations.
+Implementations may choose to write all values in separate blocks and store only CIDs in Value locations in an IPLD HashMap. Alternatively, a rough size heuristic may also be applied to make a decision regarding inline versus linked blocks. Or this decision could be left up to the user via some API choice. As storage of arbitrary kinds in Value locations is allowed by this specification, implementations should support this for read operations.
 
 ## Possible future improvements and areas for research
 
@@ -266,8 +274,9 @@ One aim of IPLD collections is to support arbitrarily large data sets. This spec
 
 Future iterations of this specification may explore:
 
- * Default hash algorithm(s) outputting a larger number of bits.
+ * Default hash algorithm(s) outputting a larger number of bits (e.g. a cryptographic hash function such as SHA2-256).
  * Resetting the `index` calculation to take bits from the start of the hash once maximum-depth is reached, allowing or theoretically infinite depth data structures.
+ * Allowing flexibility in `bucketSize` at maximum-depth nodes.
 
 ### Hash algorithm
 
