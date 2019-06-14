@@ -116,7 +116,7 @@ type Bucket list [ BucketEntry ]
 
 type BucketEntry struct {
   key Bytes
-  value Value
+  value Value (implicit "null")
 } representation tuple
 
 type Value union {
@@ -134,10 +134,9 @@ type Value union {
 Notes:
 
 * `hashAlg` in the root block is a string name that corresponds to a [multihash](https://github.com/multiformats/multihash) as found in the [multiformats table](https://github.com/multiformats/multicodec/blob/master/table.csv).
-* `bitWidth` in the root block should be at least `3`
-* `bucketSize` in the root block must be at least `1`. ***(TODO: does it need a maximum?)***
-* Values can be any kind but cannot be `Null`
-* Keys are stored in `Byte` form
+* `bitWidth` in the root block should be at least `3`.
+* `bucketSize` in the root block must be at least `1`.
+* Keys are stored in `Byte` form.
 
 ## Algorithm in detail
 
@@ -146,12 +145,12 @@ Notes:
 1. Set a `depth` value to `0`, indicating the root block
 2. The `key` is hashed, using `hashAlg`.
 3. Take the left-most `bitWidth` bits, offset by `depth x bitWidth`, from the hash to form an `index`. At each level of the data structure, we increment the section of bits we take from the hash so that the `index` comprises a different set of bits as we move down.
-4. If the `index` bit in the node's `map` is `0`, we can be certain that the `key` does not exist in this data structure, so return a `Null` value.
+4. If the `index` bit in the node's `map` is `0`, we can be certain that the `key` does not exist in this data structure, so return an empty value (as appropriate for the implementation platform).
 5. If the `index` bit in the node's `map` is `1`, the value may exist. Perform a `popcount()` on the `map` up to `index` such that we count the number of `1` bits up to the `index` bit-position. This gives us `dataIndex`, an index in the `data` array to look up the value or insert a new bucket.
 6. If the `dataIndex` element of `data` contains a link (CID) to a child block, increment `depth` and repeat with the child node identified by the link from step **3**.
 7. If the `dataIndex` element of `data` contains a bucket (array), iterate through entries in the bucket:
    1. If an entry has the `key` we are looking for, return the `value`.
-   2. If no entries contain the `key` we are looking for, return a `Null` value. Note that the bucket will be sorted by `key` so a scan can stop when a scan yields keys greater than `key`.
+   2. If no entries contain the `key` we are looking for, return an empty value (as appropriate for the implementation platform). Note that the bucket will be sorted by `key` so a scan can stop when a scan yields keys greater than `key`.
 
 ### `Set(key, value)`
 
@@ -254,11 +253,11 @@ These defaults are descriptive rather than prescriptive. New implementations may
 
 ### `bitWidth`
 
-* The default `bitWidth` is `8` for writing IPLD HashMaps. This value yields a `data` length of `2`<sup>`8`</sup>`=256`. `8` is also simple in most programming languages to slice off a list of bytes since it's a simple byte-index. However, implementations should be designed to support different `bitWidth`s encountered when reading IPLD HashMaps. The minimum supported `bitWidth` should be `2` and the maximum is `12` ***(TODO: see other TODO re `bitWidth` of `12`)***.
+* The default `bitWidth` is `8` for writing IPLD HashMaps. This value yields a `data` length of `2`<sup>`8`</sup>`=256`. `8` is also simple in most programming languages to slice off a list of bytes since it's a simple byte-index. However, implementations should be designed to support different `bitWidth`s encountered when reading IPLD HashMaps. The minimum supported `bitWidth` should be `3`. No maximum is specified, however implementers should be aware that interoperability problems may arise with large `bitWidth` values.
 
 ### `bucketSize`
 
-* The default `bucketSize` is `3` for writing IPLD HashMaps. Combined with a `bitWidth` of `8` this yields a theoretical maximally full node (with no child nodes) of `256 x 3 = 768` `key` / `value` pairs.
+* The default `bucketSize` is `3` for writing IPLD HashMaps. Combined with a `bitWidth` of `8` this yields a theoretical maximally full node (with no child nodes) of `256 x 3 = 768` `key` / `value` pairs. The minimum supported `bucketSize` should be `1`. No maximum is specified, however implementers should be aware that interoperability problems may arise with very large `bucketSize` values.
 
 ### Maximum key size
 
