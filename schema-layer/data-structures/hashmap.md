@@ -2,32 +2,32 @@
 
 **Status: Prescriptive - Draft**
 
-* [Introduction](#introduction)
-* [Useful references](#useful-references)
-* [Summary](#summary)
-* [Structure](#structure)
-  * [Parameters](#parameters)
-  * [Node properties](#node-properties)
-  * [Schema](#schema)
-* [Algorithm in detail](#algorithm-in-detail)
-  * [`Get(key)`](#getkey)
-  * [`Set(key, value)`](#setkey-value)
-  * [`Delete(key)`](#deletekey)
-  * [`Keys()`, `Values()` and `Entries()`](#keys-values-and-entries)
-  * [Differences to CHAMP](#differences-to-champ)
-  * [Canonical form](#canonical-form)
-* [Use as a "Set"](#use-as-a-%22set%22)
-* [Implementation defaults](#implementation-defaults)
-  * [`hashAlg`](#hashalg)
-  * [`bitWidth`](#bitwidth)
-  * [`bucketSize`](#bucketsize)
-  * [Maximum key size](#maximum-key-size)
-  * [Inline values](#inline-values)
-* [Possible future improvements and areas for research](#possible-future-improvements-and-areas-for-research)
-  * [Maximum depth limitations](#maximum-depth-limitations)
-  * [Hash algorithm](#hash-algorithm)
-  * [Buckets](#buckets)
-  * [Security](#security)
+* [Introduction](#Introduction)
+* [Useful references](#Useful-references)
+* [Summary](#Summary)
+* [Structure](#Structure)
+  * [Parameters](#Parameters)
+  * [Node properties](#Node-properties)
+  * [Schema](#Schema)
+* [Algorithm in detail](#Algorithm-in-detail)
+  * [`Get(key)`](#Getkey)
+  * [`Set(key, value)`](#Setkey-value)
+  * [`Delete(key)`](#Deletekey)
+  * [`Keys()`, `Values()` and `Entries()`](#Keys-Values-and-Entries)
+  * [Differences to CHAMP](#Differences-to-CHAMP)
+  * [Canonical form](#Canonical-form)
+* [Use as a "Set"](#Use-as-a-%22Set%22)
+* [Implementation defaults](#Implementation-defaults)
+  * [`hashAlg`](#hashAlg)
+  * [`bitWidth`](#bitWidth)
+  * [`bucketSize`](#bucketSize)
+  * [Maximum key size](#Maximum-key-size)
+  * [Inline values](#Inline-values)
+* [Possible future improvements and areas for research](#Possible-future-improvements-and-areas-for-research)
+  * [Maximum depth limitations](#Maximum-depth-limitations)
+  * [Hash algorithm](#Hash-algorithm)
+  * [Buckets](#Buckets)
+  * [Security](#Security)
 
 ## Introduction
 
@@ -138,10 +138,11 @@ type Value union {
 
 Notes:
 
-* `hashAlg` in the root block is a string name that corresponds to a [multihash](https://github.com/multiformats/multihash) as found in the [multiformats table](https://github.com/multiformats/multicodec/blob/master/table.csv).
+* `hashAlg` in the root block is a string identifier for a hash algorithm. The identifier should correspond to a [multihash](https://github.com/multiformats/multihash) identifier as found in the [multiformats table](https://github.com/multiformats/multicodec/blob/master/table.csv).
 * `bitWidth` in the root block should be at least `3`.
 * `bucketSize` in the root block must be at least `1`.
 * Keys are stored in `Byte` form.
+* The size of `map` is determined by `bitWidth` since it holds one bit per possible data element. It must be `1` or `2`<sup>`bitWidth`</sup>` / 8` bytes long, whichever is largest.
 
 ## Algorithm in detail
 
@@ -253,7 +254,7 @@ These defaults are descriptive rather than prescriptive. New implementations may
 
 ### `hashAlg`
 
-* The default supported hash algorithm for writing IPLD HashMaps is the x64 form of the 128-bit [MurmurHash3](https://github.com/aappleby/smhasher), identified by the multihash name ['murmur3-128'](https://github.com/multiformats/multicodec/blob/master/table.csv). Note the x86 form will produce different output so should not be confused with the x64 form. Additionally, [some JavaScript implementations](https://cimi.io/murmurhash3js-revisited/) do not correctly decompose UTF-8 strings into their constituent bytes for hashing so will not produce portable results.
+* The default supported hash algorithm for writing IPLD HashMaps is the x64 form of the 128-bit [MurmurHash3](https://github.com/aappleby/smhasher) (identified by the multihash name ['murmur3-128'](https://github.com/multiformats/multicodec/blob/master/table.csv)). Note the x86 form will produce different output so should not be confused with the x64 form. Additionally, [some JavaScript implementations](https://cimi.io/murmurhash3js-revisited/) do not correctly decompose UTF-8 strings into their constituent bytes for hashing so will not produce portable results.
 * Pluggability of hash algorithms is encouraged to allow users to switch switch if their use-case has a compelling reason. Such pluggability requires the supply of an algorithm that takes Bytes and returns Bytes. Users changing the hash algorithm need to be aware that such pluggability restricts the ability of other implementations to read their data since matching hash algorithms also need to be supplied on the read-side.
 
 ### `bitWidth`
