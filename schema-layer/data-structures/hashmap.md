@@ -37,6 +37,7 @@ The IPLD HashMap is constructed as a [hash array mapped trie (HAMT)](https://en.
 
 ## Useful references
 
+* [Fast And Space Efficient Trie Searches](https://infoscience.epfl.ch/record/64394/files/triesearches.pdf) by Phil Bagwell, 2000, and [Ideal Hash Trees](http://lampwww.epfl.ch/papers/idealhashtrees.pdf) by Phil Bagwell, 2001, introduce the AMT and HAMT concepts.
 * [CHAMP paper](https://michael.steindorfer.name/publications/oopsla15.pdf) presented at Oopsla 2015 by Steinforder & Vinju
 * [Java implementation](https://github.com/msteindorfer/oopsla15-artifact/) accompanying the original CHAMP paper (see https://github.com/msteindorfer/oopsla15-artifact/blob/master/pdb.values/src/org/eclipse/imp/pdb/facts/util/TrieMap_5Bits.java and other TrieMap files in the same directory).
 * [Optimizing Hash-Array Mapped Tries for Fast and Lean Immutable JVM Collections](https://blog.acolyer.org/2015/11/27/hamt/) a high-level description of HAMT data structures in general and the specifics of CHAMP.
